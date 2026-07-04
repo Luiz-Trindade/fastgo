@@ -1,0 +1,109 @@
+# --- Python geral ---
+__pycache__/
+*.py[oc]
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.dll
+*.egg
+*.egg-info/
+dist/
+build/
+wheels/
+*.egg-info/
+.eggs/
+*.manifest
+*.spec
+pip-wheel-metadata/
+share/python-wheels/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# --- Ferramentas de desenvolvimento ---
+# uv
+.uv/
+uv.lock
+
+# Poetry
+poetry.lock
+.poetry/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+
+# --- IDEs e editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+.project
+.pydevproject
+.settings/
+*.sublime-*
+
+# --- Banco de dados (SQLite) ---
+*.db
+*.sqlite
+*.sqlite3
+fastgo.db
+fastgo.db-journal
+
+# --- Cache (diskcache) ---
+fastgo_cache/
+*.cache
+*.diskcache
+
+# --- Logs e arquivos temporários ---
+*.log
+logs/
+*.tmp
+*.temp
+tmp/
+temp/
+
+# --- Documentação e build ---
+docs/_build/
+site/
+*.md.html
+*.pdf
+
+# --- Arquivos de ambiente e sensíveis ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.csr
+secrets/
+credentials/
+
+# --- Jupyter / notebooks (se usar) ---
+.ipynb_checkpoints/
+*.ipynb
+
+# --- Outros ---
+*.zip
+*.tar.gz
+*.tgz
+*.rar
+*.7z
