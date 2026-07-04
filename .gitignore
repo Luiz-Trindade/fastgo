@@ -71,6 +71,8 @@ fastgo.db-journal
 fastgo_cache/
 *.cache
 *.diskcache
+.db-shm
+.db-wal
 
 # --- Logs e arquivos temporários ---
 *.log
