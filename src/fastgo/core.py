@@ -4,10 +4,10 @@ import uvicorn
 import json
 from os import cpu_count
 from functools import wraps
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from diskcache import Cache
-from typing import Callable, Optional, Any, Dict
+from typing import Callable, Optional, Any, Dict, List
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from sqlmodel import create_engine, SQLModel, Session
@@ -17,7 +17,7 @@ class FastGo:
     def __init__(
         self,
         database_url: str = "sqlite:///fastgo.db",
-        database_models: Optional[list] = None,
+        database_models: Optional[List[SQLModel]] = None,
         cache_ttl: int = 120,
         cache_dir: str = "cache",
         # Parâmetros para personalizar a documentação OpenAPI
@@ -107,9 +107,9 @@ class FastGo:
                 bound = sig.bind(*args, **kwargs)
                 bound.apply_defaults()
 
-                # 🔥 CORREÇÃO: Remove parâmetros do tipo Request e Session
+                # Remove parâmetros do tipo Request e Session
                 for name, value in list(bound.arguments.items()):
-                    if isinstance(value, (Request, Session)):  # <-- ADICIONADO Session
+                    if isinstance(value, (Request, Session)):
                         del bound.arguments[name]
 
                 items = sorted(bound.arguments.items())
@@ -140,6 +140,176 @@ class FastGo:
         for key in list(self.cache.iterkeys()):
             if key.startswith(prefix):
                 self.cache.delete(key)
+
+    def register_model(
+        self,
+        model_class,
+        prefix: Optional[str] = None,
+        exclude: Optional[List[str]] = None,
+        **route_kwargs,
+    ):
+        """
+        Registra automaticamente rotas CRUD para um modelo.
+
+        Args:
+            model_class: Classe que herda de FastModel (ex: Product)
+            prefix: Prefixo para as rotas (padrão: nome do modelo em minúsculo + 's')
+            exclude: Lista de métodos a excluir ('list', 'create', 'read', 'update', 'delete')
+            **route_kwargs: Parâmetros extras para todas as rotas (ex: tags=["Products"])
+        """
+        # Define o prefixo padrão (ex: Product -> /products)
+        if prefix is None:
+            prefix = f"/{model_class.__name__.lower()}s"
+
+        exclude = exclude or []
+        exclude_set = set(exclude)
+
+        # --- Cria a engine se ainda não existir ---
+        if self.engine is None:
+            self.engine = create_engine(self.database_url, echo=True)
+            SQLModel.metadata.create_all(self.engine)
+            print(f"✅ Tabelas criadas/verificadas para: {model_class.__name__}")
+
+        # --- Cria modelos Pydantic para entrada de dados (criação e atualização) ---
+        # Identifica campos que não fazem parte da criação/atualização
+        ignored_fields = {"id", "created_at", "updated_at"}
+
+        # Obtém campos do modelo (Pydantic v2)
+        fields_info = {}
+        for name, field in model_class.model_fields.items():
+            if name not in ignored_fields:
+                fields_info[name] = (field.annotation, field)
+
+        # Modelo de criação (todos os campos obrigatórios)
+        create_annotations = {k: v[0] for k, v in fields_info.items()}
+        create_defaults = {
+            k: v[1].default for k, v in fields_info.items() if v[1].default is not None
+        }
+        # Cria a classe dinamicamente
+        CreateModel = type(
+            f"{model_class.__name__}Create",
+            (SQLModel,),
+            {
+                "__annotations__": create_annotations,
+                **create_defaults,
+            },
+        )
+
+        # Modelo de atualização (todos os campos opcionais)
+        from typing import Optional as OptType
+
+        update_annotations = {k: OptType[v[0]] for k, v in fields_info.items()}
+        update_defaults = {k: None for k in fields_info}
+        UpdateModel = type(
+            f"{model_class.__name__}Update",
+            (SQLModel,),
+            {
+                "__annotations__": update_annotations,
+                **update_defaults,
+            },
+        )
+
+        # Dependência para obter sessão
+        def get_session():
+            with Session(self.engine) as session:
+                yield session
+
+        # --- Registro das rotas ---
+
+        # 1. Listar (GET /{prefix})
+        if "list" not in exclude_set:
+
+            @self.register_route(
+                prefix,
+                methods=["GET"],
+                response_model=list[model_class],
+                cache_prefix=prefix,
+                **route_kwargs,
+            )
+            def list_items(session: Session = Depends(get_session)):
+                return model_class.find_all(session)
+
+            list_items.__name__ = f"list_{model_class.__name__.lower()}"
+
+        # 2. Criar (POST /{prefix})
+        if "create" not in exclude_set:
+
+            @self.register_route(
+                prefix,
+                methods=["POST"],
+                response_model=model_class,
+                status_code=201,
+                cache_prefix=prefix,
+                **route_kwargs,
+            )
+            def create_item(data: CreateModel, session: Session = Depends(get_session)):
+                new_item = model_class(**data.model_dump())
+                new_item.save(session)
+                return new_item
+
+            create_item.__name__ = f"create_{model_class.__name__.lower()}"
+
+        # 3. Obter (GET /{prefix}/{id})
+        if "read" not in exclude_set:
+
+            @self.register_route(
+                f"{prefix}/{{item_id}}",
+                methods=["GET"],
+                response_model=model_class,
+                cache_prefix=prefix,
+                **route_kwargs,
+            )
+            def get_item(item_id: int, session: Session = Depends(get_session)):
+                item = model_class.find(session, item_id)
+                if not item:
+                    raise HTTPException(status_code=404, detail="Item not found")
+                return item
+
+            get_item.__name__ = f"get_{model_class.__name__.lower()}"
+
+        # 4. Atualizar (PATCH /{prefix}/{id})
+        if "update" not in exclude_set:
+
+            @self.register_route(
+                f"{prefix}/{{item_id}}",
+                methods=["PATCH"],
+                response_model=model_class,
+                cache_prefix=prefix,
+                **route_kwargs,
+            )
+            def update_item(
+                item_id: int,
+                data: UpdateModel,
+                session: Session = Depends(get_session),
+            ):
+                item = model_class.find(session, item_id)
+                if not item:
+                    raise HTTPException(status_code=404, detail="Item not found")
+                update_data = data.model_dump(exclude_unset=True)
+                item.update(session, **update_data)
+                return item
+
+            update_item.__name__ = f"update_{model_class.__name__.lower()}"
+
+        # 5. Deletar (DELETE /{prefix}/{id})
+        if "delete" not in exclude_set:
+
+            @self.register_route(
+                f"{prefix}/{{item_id}}",
+                methods=["DELETE"],
+                cache_prefix=prefix,
+                **route_kwargs,
+            )
+            def delete_item(item_id: int, session: Session = Depends(get_session)):
+                item = model_class.find(session, item_id)
+                if not item:
+                    raise HTTPException(status_code=404, detail="Item not found")
+                item.delete(session)
+                return {"detail": "Item deleted"}
+
+            delete_item.__name__ = f"delete_{model_class.__name__.lower()}"
+
+        print(f"✅ Rotas CRUD registradas para {model_class.__name__} em {prefix}")
 
     def run(
         self,
